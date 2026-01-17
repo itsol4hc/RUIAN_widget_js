@@ -1,0 +1,818 @@
+<script>
+    /**
+     * RUIAN CLASS (Library) Google Apps Script
+     * Version: 1.1 LEGACY-SAFE (Prototype pattern)
+     * Removed class syntax and arrow callback assign, which caused errors in GAS.
+     * Added: municipality cache, ZIP disambiguation with 3-stage fallback
+     */
+
+    // Constructor function instead of "class"
+    var RuianAddressWidget = function (config) {
+        // 1. Safe element detection
+        this.inputElement = null;
+        if (typeof config.fieldString === 'string') {
+            this.inputElement = document.getElementById(config.fieldString);
+            if (!this.inputElement) {
+                this.inputElement = document.querySelector(config.fieldString);
+            }
+        } else {
+            this.inputElement = config.fieldString;
+        }
+
+        if (!this.inputElement) {
+            console.error('RUIAN Error: Input not found for:', config.fieldString);
+            return;
+        }
+
+        // 2. Variable initialization
+        this.apiKey = config.APIKey;
+
+        // Cache configuration
+        this.cachePreservation = config.cachePreservation !== undefined ? config.cachePreservation : 24;
+        this.cacheReset = config.cacheReset || false;
+
+        this.state = {
+            municipalityId: null,
+            municipalityName: null,
+            zip: null,
+            streetName: null
+        };
+
+        // Municipality cache
+        this.allMunicipalities = null;
+        this.municipalitiesLoading = false;
+        this.zipCache = {};
+
+        this.suggestionBox = document.getElementById('ruianSuggestions');
+        this.statusElement = document.getElementById('ruianStatus');
+        this.debounceTimer = null;
+        this.suggestionsData = [];
+        this.activeIndex = -1;
+
+        // Handle cache reset
+        if (this.cacheReset) {
+            try {
+                localStorage.removeItem('ruian_municipalities_cache');
+                console.log("RUIAN: Cache reset on init");
+            } catch (e) { }
+        }
+
+        // 3. Execution / Start
+        this.init();
+    };
+
+    // --- METHODS (attached via prototype) ---
+
+    RuianAddressWidget.prototype.init = function () {
+        var self = this; // Save context for use inside functions
+
+        // Input listener
+        this.inputElement.addEventListener('input', function (e) {
+            if (self.debounceTimer) {
+                clearTimeout(self.debounceTimer);
+            }
+            self.inputElement.classList.remove('is-valid', 'is-invalid');
+
+            self.debounceTimer = setTimeout(function () {
+                self.handleInput(e.target.value);
+            }, 400);
+        });
+
+        // Keydown listener (arrow navigation)
+        this.inputElement.addEventListener('keydown', function (e) {
+            self.handleKeydown(e);
+        });
+
+        // Click listener (close on click outside)
+        document.addEventListener('click', function (e) {
+            if (self.suggestionBox && e.target !== self.inputElement && !self.suggestionBox.contains(e.target)) {
+                self.closeSuggestions();
+            }
+        });
+    };
+
+    RuianAddressWidget.prototype.formatZip = function (zip) {
+        if (!zip) return "";
+        var s = String(zip).replace(/\s/g, '');
+        if (s.length === 5) {
+            return s.substring(0, 3) + " " + s.substring(3);
+        }
+        return s;
+    };
+
+    // Helper method for parsing numbers (returns object, does not use callback)
+    RuianAddressWidget.prototype.parseNumberData = function (numStr) {
+        var result = { cp: null, co: null };
+        if (!numStr) return result;
+
+        var nums = numStr.split('/');
+        var cpRaw = nums[0].replace(/\D/g, '');
+
+        if (cpRaw) {
+            result.cp = cpRaw;
+        }
+        if (nums[1]) {
+            var coRaw = nums[1].replace(/\D/g, '');
+            if (coRaw) {
+                result.co = coRaw;
+            }
+        }
+        return result;
+    };
+
+    // Region name helper
+    RuianAddressWidget.prototype.getRegionName = function (regionId) {
+        var regions = {
+            'CZ010': 'Hlavní město Praha',
+            'CZ020': 'Středočeský kraj',
+            'CZ031': 'Jihočeský kraj',
+            'CZ032': 'Plzeňský kraj',
+            'CZ041': 'Karlovarský kraj',
+            'CZ042': 'Ústecký kraj',
+            'CZ051': 'Liberecký kraj',
+            'CZ052': 'Královéhradecký kraj',
+            'CZ053': 'Pardubický kraj',
+            'CZ063': 'Kraj Vysočina',
+            'CZ064': 'Jihomoravský kraj',
+            'CZ071': 'Olomoucký kraj',
+            'CZ072': 'Zlínský kraj',
+            'CZ080': 'Moravskoslezský kraj'
+        };
+        return regions[regionId] || regionId;
+    };
+
+    // Load municipalities from cache
+    RuianAddressWidget.prototype.loadMunicipalitiesFromCache = function () {
+        try {
+            var cached = localStorage.getItem('ruian_municipalities_cache');
+            if (!cached) return null;
+
+            var data = JSON.parse(cached);
+            var ageHours = (Date.now() - data.timestamp) / (1000 * 60 * 60);
+
+            if (ageHours > this.cachePreservation) {
+                console.log("RUIAN: Cache expired");
+                return null;
+            }
+
+            console.log("RUIAN: Loaded " + data.municipalities.length + " municipalities from cache");
+            return data.municipalities;
+        } catch (e) {
+            return null;
+        }
+    };
+
+    // Save municipalities to cache
+    RuianAddressWidget.prototype.saveMunicipalitiesToCache = function (municipalities) {
+        try {
+            var data = {
+                timestamp: Date.now(),
+                municipalities: municipalities
+            };
+            localStorage.setItem('ruian_municipalities_cache', JSON.stringify(data));
+            console.log("RUIAN: Saved " + municipalities.length + " municipalities to cache");
+        } catch (e) {
+            console.warn("RUIAN: Failed to cache municipalities");
+        }
+    };
+
+    // Load all municipalities
+    RuianAddressWidget.prototype.loadAllMunicipalities = async function () {
+        var self = this;
+
+        if (this.allMunicipalities) {
+            return this.allMunicipalities;
+        }
+
+        // Check cache first
+        var cached = this.loadMunicipalitiesFromCache();
+        if (cached) {
+            this.allMunicipalities = cached;
+            return cached;
+        }
+
+        // Prevent parallel loading
+        if (this.municipalitiesLoading) {
+            while (this.municipalitiesLoading) {
+                await new Promise(function (r) { setTimeout(r, 100); });
+            }
+            return this.allMunicipalities || [];
+        }
+
+        this.municipalitiesLoading = true;
+        console.log("RUIAN: Loading all municipalities from API...");
+
+        try {
+            var regions = ['CZ010', 'CZ020', 'CZ031', 'CZ032', 'CZ041', 'CZ042', 'CZ051', 'CZ052', 'CZ053', 'CZ063', 'CZ064', 'CZ071', 'CZ072', 'CZ080'];
+            var allMunicipalities = [];
+
+            for (var i = 0; i < regions.length; i++) {
+                var regionId = regions[i];
+                var url = "https://ruian.fnx.io/api/v1/ruian/build/municipalities?apiKey=" + this.apiKey + "&regionId=" + regionId;
+                var data = await this.fetchJson(url);
+                if (data && data.data) {
+                    for (var j = 0; j < data.data.length; j++) {
+                        var m = data.data[j];
+                        allMunicipalities.push({
+                            municipalityId: m.municipalityId,
+                            municipalityName: m.municipalityName,
+                            regionId: regionId,
+                            regionName: self.getRegionName(regionId)
+                        });
+                    }
+                }
+            }
+
+            this.allMunicipalities = allMunicipalities;
+            console.log("RUIAN: Loaded " + allMunicipalities.length + " municipalities");
+
+            // Save to cache
+            this.saveMunicipalitiesToCache(allMunicipalities);
+        } catch (e) {
+            console.error("RUIAN: Error loading municipalities:", e);
+        }
+
+        this.municipalitiesLoading = false;
+        return this.allMunicipalities || [];
+    };
+
+    // Fetch ZIP code with 3-stage fallback
+    RuianAddressWidget.prototype.fetchMunicipalityZip = async function (municipalityId) {
+        if (this.zipCache[municipalityId]) {
+            return this.zipCache[municipalityId];
+        }
+
+        var zip = null;
+
+        // Try #1: /validate with cp=1
+        try {
+            var url1 = "https://ruian.fnx.io/api/v1/ruian/validate?apiKey=" + this.apiKey + "&municipalityId=" + municipalityId + "&cp=1";
+            var data1 = await this.fetchJson(url1);
+            if (data1 && data1.place) {
+                zip = data1.place.zip || data1.place.placeZip;
+            }
+        } catch (e) { }
+
+        // Try #2: /places with streetName=-
+        if (!zip) {
+            try {
+                var url2 = "https://ruian.fnx.io/api/v1/ruian/build/places?apiKey=" + this.apiKey + "&municipalityId=" + municipalityId + "&streetName=-&limit=1";
+                var data2 = await this.fetchJson(url2);
+                if (data2 && data2.data && data2.data.length > 0) {
+                    zip = data2.data[0].placeZip || data2.data[0].zip;
+                } else if (data2 && data2.length > 0) {
+                    zip = data2[0].placeZip || data2[0].zip;
+                }
+            } catch (e) { }
+        }
+
+        // Try #3: /streets → /places
+        if (!zip) {
+            try {
+                var streetsUrl = "https://ruian.fnx.io/api/v1/ruian/build/streets?apiKey=" + this.apiKey + "&municipalityId=" + municipalityId + "&limit=1";
+                var streetsData = await this.fetchJson(streetsUrl);
+                var streets = streetsData && streetsData.data ? streetsData.data : streetsData;
+                if (streets && streets.length > 0) {
+                    var streetName = streets[0].streetName;
+                    var placesUrl = "https://ruian.fnx.io/api/v1/ruian/build/places?apiKey=" + this.apiKey + "&municipalityId=" + municipalityId + "&streetName=" + encodeURIComponent(streetName) + "&limit=1";
+                    var placesData = await this.fetchJson(placesUrl);
+                    var places = placesData && placesData.data ? placesData.data : placesData;
+                    if (places && places.length > 0) {
+                        zip = places[0].placeZip || places[0].zip;
+                    }
+                }
+            } catch (e) {
+                console.error("RUIAN: Error fetching ZIP:", e);
+            }
+        }
+
+        if (zip) {
+            this.zipCache[municipalityId] = zip;
+            return zip;
+        }
+        return null;
+    };
+
+    RuianAddressWidget.prototype.handleInput = async function (value) {
+        if (!value || value.trim().length < 1) {
+            this.closeSuggestions();
+            this.updateUI(null);
+            return;
+        }
+
+        var parts = value.split(',').map(function (s) { return s.trim(); });
+        var currentPartIndex = parts.length - 1;
+        var currentText = parts[currentPartIndex];
+
+        // Reset state if changing municipality
+        if (currentPartIndex === 0 && this.state.municipalityName) {
+            var minLen = Math.min(value.length, this.state.municipalityName.length);
+            if (!value.startsWith(this.state.municipalityName.substring(0, minLen))) {
+                this.resetState();
+            }
+        }
+
+        await this.tryAutoSelectContext(parts);
+
+        var suggestions = [];
+
+        // Full address validation
+        if (value.length > 5 && /\d/.test(value)) {
+            var validationResult = await this.apiValidate(value);
+
+            if (validationResult && validationResult.status === 'MATCH') {
+                this.updateUI(true);
+                var p = validationResult.place;
+                var streetPart = p.streetName || p.municipalityPartName || p.municipalityName;
+
+                var numberPart = p.cp || "";
+                if (p.co) numberPart += "/" + p.co;
+                if (p.ce) numberPart = "ev." + p.ce;
+
+                var postalLabel = streetPart + " " + numberPart + ", " + this.formatZip(p.zip) + " " + p.municipalityName;
+
+                // Simple normalization for comparison
+                var normalize = function (s) { return s.replace(/\s+/g, ' ').trim(); };
+
+                if (normalize(value) !== normalize(postalLabel)) {
+                    suggestions.unshift({
+                        type: 'kompletní',
+                        label: postalLabel,
+                        value: postalLabel,
+                        data: p
+                    });
+                }
+                this.renderSuggestions(suggestions);
+                return;
+            } else {
+                this.updateUI(false);
+            }
+        }
+
+        // Autocomplete / Suggestions
+        try {
+            if (!this.state.municipalityId || currentPartIndex === 0) {
+                var munSuggestions = await this.searchMunicipality(currentText);
+                suggestions = suggestions.concat(munSuggestions);
+
+                if (munSuggestions.length === 0 && parts.length > 1 && !this.state.municipalityId) {
+                    var fallbackSuggestions = await this.searchMunicipality(parts[0]);
+                    if (fallbackSuggestions.length > 0) {
+                        suggestions = suggestions.concat(fallbackSuggestions);
+                    }
+                }
+            } else if (this.state.municipalityId && !this.isNumber(currentText) && currentPartIndex === 1) {
+                var streetSuggestions = await this.searchStreet(this.state.municipalityId, currentText);
+                suggestions = suggestions.concat(streetSuggestions);
+
+                if (streetSuggestions.length === 0 && currentText.trim() === "") {
+                    var placeSuggestions = await this.searchPlace(this.state.municipalityId, null, currentText);
+                    suggestions = suggestions.concat(placeSuggestions);
+                }
+            } else if (this.state.municipalityId) {
+                var placeSuggestions2 = await this.searchPlace(this.state.municipalityId, this.state.streetName, currentText);
+                suggestions = suggestions.concat(placeSuggestions2);
+            }
+        } catch (err) {
+            console.error("RUIAN Error:", err);
+        }
+
+        this.renderSuggestions(suggestions);
+    };
+
+    RuianAddressWidget.prototype.tryAutoSelectContext = async function (parts) {
+        if (!this.state.municipalityId && parts.length > 1) {
+            var query = parts[0];
+            if (query.length > 1) {
+                var candidates = await this.searchMunicipality(query);
+                if (candidates.length > 0) {
+                    var match = null;
+                    // Find match
+                    for (var i = 0; i < candidates.length; i++) {
+                        if (candidates[i].value.toLowerCase() === query.toLowerCase()) {
+                            match = candidates[i];
+                            break;
+                        }
+                    }
+
+                    if (match) {
+                        this.state.municipalityId = match.data.municipalityId;
+                        this.state.municipalityName = match.data.municipalityName;
+                        this.state.zip = match.data.zip;
+                    }
+                }
+            }
+        }
+
+        if (this.state.municipalityId && !this.state.streetName && parts.length > 2) {
+            var query2 = parts[1];
+            if (query2.length > 0 && !this.isNumber(query2)) {
+                var streets = await this.searchStreet(this.state.municipalityId, query2);
+                var matchS = null;
+                for (var j = 0; j < streets.length; j++) {
+                    if (streets[j].value.toLowerCase() === query2.toLowerCase()) {
+                        matchS = streets[j];
+                        break;
+                    }
+                }
+
+                if (matchS) {
+                    this.state.streetName = matchS.value;
+                }
+            }
+        }
+    };
+
+    RuianAddressWidget.prototype.apiValidate = function (fullQuery) {
+        var url = "https://ruian.fnx.io/api/v1/ruian/validate?apiKey=" + this.apiKey;
+        var reversedFormatMatch = fullQuery.match(/^(.+?)\s+(\d+(?:\/\d+)?[a-zA-Z]?)[,\s]+(\d{3}\s?\d{2})\s+(.+)$/);
+
+        if (reversedFormatMatch) {
+            var streetRaw = reversedFormatMatch[1].trim();
+            var numberRaw = reversedFormatMatch[2].trim();
+            var zipRaw = reversedFormatMatch[3].replace(/\s/g, '');
+            var cityRaw = reversedFormatMatch[4].trim();
+
+            // Replaced with new method without callback - this was a critical spot
+            var numData = this.parseNumberData(numberRaw);
+
+            url += "&municipalityName=" + encodeURIComponent(cityRaw);
+            url += "&street=" + encodeURIComponent(streetRaw);
+            url += "&zip=" + zipRaw;
+            if (numData.cp) url += "&cp=" + numData.cp;
+            if (numData.co) url += "&co=" + numData.co;
+
+            return this.fetchJson(url);
+        }
+
+        var munName = this.state.municipalityName;
+        var streetName = this.state.streetName;
+        var cp = null;
+        var co = null;
+        var zip = null;
+        var cleanQuery = fullQuery;
+
+        var zipMatch = fullQuery.match(/\b\d{3}\s?\d{2}\b/);
+        if (zipMatch) {
+            zip = zipMatch[0].replace(/\s/g, '');
+            cleanQuery = cleanQuery.replace(zipMatch[0], '');
+        } else if (this.state.zip) {
+            zip = this.state.zip;
+        }
+
+        var rawParts = cleanQuery.split(/[,]+/).map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; });
+        var numberFound = false;
+
+        for (var i = 0; i < rawParts.length; i++) {
+            var part = rawParts[i];
+            var numberMatch = part.match(/(\d+(?:\/\d+)?[a-zA-Z]?)$/);
+            if (numberMatch) {
+                var extractedNumber = numberMatch[1];
+                var textBeforeNumber = part.substring(0, part.length - extractedNumber.length).trim();
+
+                if (textBeforeNumber.length === 0 || textBeforeNumber.length > 2) {
+                    if (textBeforeNumber.length > 2 && !streetName) {
+                        streetName = textBeforeNumber;
+                    }
+
+                    var numData2 = this.parseNumberData(extractedNumber);
+                    cp = numData2.cp;
+                    co = numData2.co;
+
+                    numberFound = true;
+                    rawParts[i] = null;
+                }
+                if (numberFound) break;
+            }
+        }
+
+        var remainingParts = rawParts.filter(function (p) { return p !== null; });
+        if (!munName && remainingParts.length > 0) {
+            if (remainingParts.length >= 2) {
+                if (!streetName) streetName = remainingParts[0];
+                munName = remainingParts[remainingParts.length - 1];
+            } else if (remainingParts.length === 1) {
+                if (streetName) {
+                    munName = remainingParts[0];
+                } else {
+                    if (this.state.municipalityId) streetName = remainingParts[0];
+                    else munName = remainingParts[0];
+                }
+            }
+        }
+
+        if (!streetName && this.state.streetName) streetName = this.state.streetName;
+        if (!munName && this.state.municipalityName) munName = this.state.municipalityName;
+
+        if (munName) url += "&municipalityName=" + encodeURIComponent(munName);
+        if (streetName) url += "&street=" + encodeURIComponent(streetName);
+        if (cp) url += "&cp=" + cp;
+        if (co) url += "&co=" + co;
+        if (zip) url += "&zip=" + zip;
+
+        return this.fetchJson(url);
+    };
+
+    // Search municipality with ZIP disambiguation
+    RuianAddressWidget.prototype.searchMunicipality = async function (query) {
+        var self = this;
+        if (/^\d/.test(query) || query.length < 2) return [];
+
+        var municipalities = await this.loadAllMunicipalities();
+        var normalized = query.toLowerCase().trim();
+
+        // Filter matches
+        var matches = municipalities.filter(function (m) {
+            var name = m.municipalityName.toLowerCase();
+            return name.indexOf(normalized) !== -1;
+        });
+
+        // Sort: exact matches first, then by name length
+        matches.sort(function (a, b) {
+            var aExact = a.municipalityName.toLowerCase() === normalized;
+            var bExact = b.municipalityName.toLowerCase() === normalized;
+            if (aExact && !bExact) return -1;
+            if (!aExact && bExact) return 1;
+
+            var aStarts = a.municipalityName.toLowerCase().indexOf(normalized) === 0;
+            var bStarts = b.municipalityName.toLowerCase().indexOf(normalized) === 0;
+            if (aStarts && !bStarts) return -1;
+            if (!aStarts && bStarts) return 1;
+
+            if (a.municipalityName.length !== b.municipalityName.length) {
+                return a.municipalityName.length - b.municipalityName.length;
+            }
+            return a.municipalityName.localeCompare(b.municipalityName);
+        });
+
+        // Identify duplicates
+        var nameRegionGroups = {};
+        matches.forEach(function (m) {
+            var key = m.municipalityName.toLowerCase() + '|' + m.regionId;
+            nameRegionGroups[key] = (nameRegionGroups[key] || 0) + 1;
+        });
+
+        var nameGroups = {};
+        matches.forEach(function (m) {
+            var name = m.municipalityName.toLowerCase();
+            nameGroups[name] = (nameGroups[name] || 0) + 1;
+        });
+
+        // Get top 15 matches
+        var topMatches = matches.slice(0, 15);
+
+        // Fetch ZIP codes for duplicates
+        var zipPromises = topMatches.map(async function (m) {
+            var key = m.municipalityName.toLowerCase() + '|' + m.regionId;
+            var needsZip = nameRegionGroups[key] > 1;
+            if (needsZip) {
+                return await self.fetchMunicipalityZip(m.municipalityId);
+            }
+            return null;
+        });
+        var zips = await Promise.all(zipPromises);
+
+        return topMatches.map(function (m, i) {
+            var hasDuplicates = nameGroups[m.municipalityName.toLowerCase()] > 1;
+            var key = m.municipalityName.toLowerCase() + '|' + m.regionId;
+            var sameRegionDuplicates = nameRegionGroups[key] > 1;
+            var zip = zips[i];
+
+            var label;
+            var formattedZip = self.formatZip(zip);
+            if (sameRegionDuplicates && formattedZip) {
+                label = m.municipalityName + ", " + formattedZip + " (" + m.regionName + ")";
+            } else if (hasDuplicates) {
+                label = m.municipalityName + " (" + m.regionName + ")";
+            } else {
+                label = m.municipalityName;
+            }
+
+            return {
+                type: 'obec',
+                label: label,
+                value: m.municipalityName,
+                data: {
+                    municipalityId: m.municipalityId,
+                    municipalityName: m.municipalityName,
+                    regionId: m.regionId,
+                    regionName: m.regionName,
+                    zip: zip
+                }
+            };
+        });
+    };
+
+    RuianAddressWidget.prototype.searchStreet = async function (municipalityId, query) {
+        var url = "https://ruian.fnx.io/api/v1/ruian/build/streets?apiKey=" + this.apiKey + "&municipalityId=" + municipalityId;
+        var json = await this.fetchJson(url);
+        if (!json || !json.data) return [];
+
+        var normalized = query.toLowerCase();
+        var filtered = json.data.filter(function (s) {
+            var name = s.streetName || s.streetLessPartName;
+            return name && name.toLowerCase().indexOf(normalized) !== -1;
+        });
+
+        return filtered.slice(0, 10).map(function (s) {
+            return {
+                type: 'ulice',
+                label: s.streetName || s.streetLessPartName,
+                value: s.streetName || s.streetLessPartName,
+                data: s
+            };
+        });
+    };
+
+    RuianAddressWidget.prototype.searchPlace = async function (municipalityId, streetName, query) {
+        var url = "https://ruian.fnx.io/api/v1/ruian/build/places?apiKey=" + this.apiKey + "&municipalityId=" + municipalityId;
+        if (streetName) url += "&streetName=" + encodeURIComponent(streetName);
+
+        var json = await this.fetchJson(url);
+        if (!json || !json.data) return [];
+
+        var normalized = query.toLowerCase().trim();
+        var candidates = json.data.map(function (p) {
+            var label = "";
+            if (p.placeCp) label += p.placeCp;
+            if (p.placeCo) label += "/" + p.placeCo;
+            if (p.placeCe) label = "ev." + p.placeCe;
+            return { type: 'číslo', label: label, value: label, data: p };
+        });
+
+        return candidates.filter(function (c) {
+            if (!normalized) return true;
+            if (c.label.toLowerCase().indexOf(normalized) === 0) return true;
+
+            var co = c.data.placeCo ? String(c.data.placeCo).toLowerCase() : "";
+            if (co.indexOf(normalized) === 0) return true;
+
+            var cp = c.data.placeCp ? String(c.data.placeCp).toLowerCase() : "";
+            if (cp.indexOf(normalized) === 0) return true;
+
+            return false;
+        }).slice(0, 10);
+    };
+
+    RuianAddressWidget.prototype.fetchJson = async function (url) {
+        try {
+            var res = await fetch(url);
+            if (!res.ok) return null;
+            return await res.json();
+        } catch (e) {
+            console.error("Network error:", e);
+            return null;
+        }
+    };
+
+    RuianAddressWidget.prototype.renderSuggestions = function (list) {
+        var self = this;
+        if (!this.suggestionBox) return;
+
+        this.suggestionBox.innerHTML = '';
+        this.suggestionsData = list;
+        this.activeIndex = (list.length > 0 && list[0].type === 'kompletní') ? 0 : -1;
+
+        if (!list || list.length === 0) {
+            this.closeSuggestions();
+            return;
+        }
+
+        list.forEach(function (item, index) {
+            var btn = document.createElement('button');
+            btn.className = 'list-group-item list-group-item-action suggestion-item';
+            if (index === self.activeIndex) btn.classList.add('active');
+
+            var badgeClass = 'bg-secondary';
+            if (item.type === 'obec') badgeClass = 'bg-primary';
+            if (item.type === 'ulice') badgeClass = 'bg-warning text-dark';
+            if (item.type === 'číslo') badgeClass = 'bg-info text-dark';
+            if (item.type === 'kompletní') {
+                badgeClass = 'bg-success';
+                btn.classList.add('suggestion-complete');
+            }
+
+            btn.innerHTML = '<span>' + item.label + '</span><span class="badge ' + badgeClass + ' badge-type">' + item.type + '</span>';
+
+            btn.onclick = function (e) {
+                e.preventDefault();
+                self.selectSuggestion(index);
+            };
+            self.suggestionBox.appendChild(btn);
+        });
+
+        this.suggestionBox.style.display = 'block';
+    };
+
+    RuianAddressWidget.prototype.selectSuggestion = function (index) {
+        var item = this.suggestionsData[index];
+        if (!item) return;
+
+        if (item.type === 'kompletní') {
+            this.inputElement.value = item.value;
+            this.state.municipalityId = item.data.municipalityId;
+            this.state.municipalityName = item.data.municipalityName;
+            this.state.zip = item.data.zip;
+            this.state.streetName = item.data.streetName || null;
+            this.updateUI(true);
+            this.closeSuggestions();
+
+            var nextField = document.getElementById('examType');
+            if (nextField) nextField.focus();
+            return;
+        }
+        else if (item.type === 'obec') {
+            this.state.municipalityId = item.data.municipalityId;
+            this.state.municipalityName = item.data.municipalityName;
+            this.state.zip = item.data.zip;
+            this.state.streetName = null;
+            this.inputElement.value = item.data.municipalityName + ", ";
+            this.handleInput(this.inputElement.value);
+            this.inputElement.focus();
+            return;
+        }
+        else if (item.type === 'ulice') {
+            this.state.streetName = item.value;
+            this.inputElement.value = this.state.municipalityName + ", " + item.value + ", ";
+            this.handleInput(this.inputElement.value);
+            this.inputElement.focus();
+            return;
+        }
+        else if (item.type === 'číslo') {
+            var prefix = this.state.municipalityName + ", ";
+            if (this.state.streetName) prefix += this.state.streetName + ", ";
+            var zip = item.data.placeZip || this.state.zip;
+            this.inputElement.value = prefix + item.value + ", " + this.formatZip(zip);
+            this.handleInput(this.inputElement.value);
+            this.inputElement.focus();
+            return;
+        }
+    };
+
+    RuianAddressWidget.prototype.closeSuggestions = function () {
+        if (this.suggestionBox) {
+            this.suggestionBox.style.display = 'none';
+        }
+        this.activeIndex = -1;
+    };
+
+    RuianAddressWidget.prototype.updateUI = function (isValid) {
+        if (!this.statusElement) return;
+
+        if (isValid === true) {
+            this.inputElement.classList.add('is-valid');
+            this.inputElement.classList.remove('is-invalid');
+            this.statusElement.textContent = 'Adresa ověřena v RUIAN';
+            this.statusElement.className = 'form-text text-success fw-bold';
+        } else if (isValid === false) {
+            this.inputElement.classList.remove('is-valid');
+            this.inputElement.classList.add('is-invalid');
+            this.statusElement.textContent = 'Adresa nebyla nalezena';
+            this.statusElement.className = 'form-text text-danger';
+        } else {
+            this.inputElement.classList.remove('is-valid', 'is-invalid');
+            this.statusElement.textContent = '';
+        }
+    };
+
+    RuianAddressWidget.prototype.handleKeydown = function (e) {
+        if (!this.suggestionBox || this.suggestionBox.style.display === 'none') return;
+        var items = this.suggestionBox.querySelectorAll('.suggestion-item');
+
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            this.activeIndex = (this.activeIndex + 1) % items.length;
+            this.highlightItem(items);
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            this.activeIndex = (this.activeIndex - 1 + items.length) % items.length;
+            this.highlightItem(items);
+        } else if (e.key === 'Enter') {
+            e.preventDefault();
+            if (this.activeIndex > -1) this.selectSuggestion(this.activeIndex);
+        } else if (e.key === 'Escape') {
+            this.closeSuggestions();
+        }
+    };
+
+    RuianAddressWidget.prototype.highlightItem = function (items) {
+        items.forEach(function (i) { i.classList.remove('active'); });
+        if (items[this.activeIndex]) {
+            items[this.activeIndex].classList.add('active');
+            items[this.activeIndex].scrollIntoView({ block: 'nearest' });
+        }
+    };
+
+    RuianAddressWidget.prototype.isNumber = function (str) {
+        return /^\d/.test(str.trim());
+    };
+
+    RuianAddressWidget.prototype.resetState = function () {
+        this.state = {
+            municipalityId: null,
+            municipalityName: null,
+            zip: null,
+            streetName: null
+        };
+    };
+</script>
