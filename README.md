@@ -56,7 +56,7 @@ const widget = new RuianAddressWidget({
 | `inputElement` | HTMLElement | **Required** | The input field for address typing. |
 | `suggestionElement` | HTMLElement | **Required** | The container (div/ul) where suggestions will appear. |
 | `apiKey` | String | **Required** | Your API Key from [ruian.fnx.io](https://ruian.fnx.io/). |
-| `badgesLabels` | Object | **Required** | Address parts description -  badgesLabels: { municipality: '', street: '', place: '', complete: '' },|
+| `badgesLabels` | Object | **Required** | Address parts description -  badgesLabels: { municipality: '', street: '', place: '', complete: '' }.|
 | `onValidationChange` | Function | `null` | Callback function triggered when address validity changes. |
 | `cachePreservation` | Number | `24` | How many hours to keep the municipality list in generic `localStorage`. |
 | `cacheReset` | Boolean | `false` | If `true`, clears the cache and reloads data on initialization. |

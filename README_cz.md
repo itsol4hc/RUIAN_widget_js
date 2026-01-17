@@ -56,7 +56,7 @@ const widget = new RuianAddressWidget({
 | `inputElement` | HTMLElement | **Povinné** | Vstupní pole pro psaní adresy. |
 | `suggestionElement` | HTMLElement | **Povinné** | Kontejner (div/ul), kde se budou zobrazovat návrhy. |
 | `apiKey` | String | **Povinné** | Váš API klíč z [ruian.fnx.io](https://ruian.fnx.io/). |
-| `badgesLabels` | Object | **Povinné** | Popis částí adresy -  badgesLabels: { municipality: 'obec', street: 'ulice', place: 'číslo', complete: 'kompletní' },|
+| `badgesLabels` | Object | **Povinné** | Popis částí adresy -  badgesLabels: { municipality: 'obec', street: 'ulice', place: 'číslo', complete: 'kompletní' }.|
 | `onValidationChange` | Function | `null` | Funkce volaná při změně platnosti adresy. |
 | `cachePreservation` | Number | `24` | Kolik hodin udržovat seznam obcí v `localStorage`. |
 | `cacheReset` | Boolean | `false` | Pokud je `true`, vymaže cache a znovu načte data při inicializaci. |
