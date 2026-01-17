@@ -292,7 +292,7 @@
             <!-- Left Panel -->
             <div class="left-panel">
 
-                <!-- API Key Card -->
+                <!-- API Key Card (Fixed Height) -->
                 <div class="card card-config bg-white shadow-sm">
                     <div class="card-body py-3">
                         <label class="form-label small text-uppercase text-muted fw-bold mb-1">API Key
@@ -381,6 +381,13 @@
                 this.inputElement = config.inputElement;
                 this.suggestionBox = config.suggestionElement;
                 this.apiKey = config.apiKey;
+                // Badges Labels
+                if  (typeof config.badgesLabels === 'object' && config.badgesLabels !== null) {
+                    this.badgesLabels = config.badgesLabels;
+                }
+                else {
+                    this.badgesLabels ={municipality:'municipality', street:'street', place:'place', complete:'complete'}
+                }                
                 this.onValidationChange = config.onValidationChange || function () { };
                 this.onLog = config.onLog || console.log;
 
@@ -1102,7 +1109,7 @@
 
                     btn.innerHTML = `
                 <span>${item.label}</span>
-                <span class="badge ${badgeClass} badge-type">${item.type}</span>
+                <span class="badge ${badgeClass} badge-type">${this.badgesLabels[item.type]}</span>
             `;
 
                     btn.onclick = (e) => {
@@ -1275,6 +1282,7 @@
                 inputElement: document.getElementById('address-input'),
                 suggestionElement: document.getElementById('suggestion-box'),
                 apiKey: apiKeyInput.value,
+                badgesLabels:{municipality:'municipality', street:'street', place:'place', complete:'complete'},                                
                 onValidationChange: onValidationChange,
                 onLog: domLogger
             });

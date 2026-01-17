@@ -20,6 +20,7 @@ class RuianAddressWidget {
      * @param {HTMLElement} config.inputElement - The input field for the address
      * @param {HTMLElement} config.suggestionElement - The container for suggestions (ul or div)
      * @param {string} config.apiKey - Your RUIAN FNX API Key
+     * @param {string} config.badgesLabels - Labels for info badges {municipality:'municipality', street:'street', place:'place', complete:'complete'}
      * @param {Function} [config.onValidationChange] - Callback (isValid, ruianPlaceObject)
      * @param {Function} [config.onLog] - Callback (message, type: 'INFO'|'WARN'|'ERROR'|'SUCCESS')
      * @param {number} [config.cachePreservation=24] - Cache duration in hours
@@ -31,6 +32,12 @@ class RuianAddressWidget {
         this.apiKey = config.apiKey;
         this.onValidationChange = config.onValidationChange || function () { };
         this.onLog = config.onLog || console.log;
+        if  (typeof config.badgesLabels === 'object' && config.badgesLabels !== null) {
+            this.badgesLabels = config.badgesLabels;
+        }
+        else {
+            this.badgesLabels ={municipality:'municipality', street:'street', place:'place', complete:'complete'}
+        }
 
         // Cache configuration
         this.cachePreservation = config.cachePreservation !== undefined ? config.cachePreservation : 24;
@@ -801,7 +808,7 @@ class RuianAddressWidget {
 
             btn.innerHTML = `
                 <span>${item.label}</span>
-                <span class="badge ${badgeClass} badge-type">${item.type}</span>
+                <span class="badge ${badgeClass} badge-type">${this.badgesLabels[item.type]}</span>
             `;
 
             // Prevent form submission on click
