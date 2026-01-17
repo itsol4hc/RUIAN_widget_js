@@ -27,6 +27,14 @@
         // 2. Variable initialization
         this.apiKey = config.APIKey;
 
+        // Badges Labels
+        if  (typeof config.badgesLabels === 'object' && config.badgesLabels !== null) {
+            this.badgesLabels = config.badgesLabels;
+        }
+        else {
+            this.badgesLabels ={municipality:'municipality', street:'street', place:'place', complete:'complete'}
+        }
+
         // Cache configuration
         this.cachePreservation = config.cachePreservation !== undefined ? config.cachePreservation : 24;
         this.cacheReset = config.cacheReset || false;
@@ -57,7 +65,7 @@
             } catch (e) { }
         }
 
-        // 3. Execution / Start
+        // 3. Initialization / Start
         this.init();
     };
 
@@ -336,7 +344,7 @@
 
                 if (normalize(value) !== normalize(postalLabel)) {
                     suggestions.unshift({
-                        type: 'kompletní',
+                        type: 'complete',
                         label: postalLabel,
                         value: postalLabel,
                         data: p
@@ -589,7 +597,7 @@
             }
 
             return {
-                type: 'obec',
+                type: 'municipality',
                 label: label,
                 value: m.municipalityName,
                 data: {
@@ -616,7 +624,7 @@
 
         return filtered.slice(0, 10).map(function (s) {
             return {
-                type: 'ulice',
+                type: 'street',
                 label: s.streetName || s.streetLessPartName,
                 value: s.streetName || s.streetLessPartName,
                 data: s
@@ -637,7 +645,7 @@
             if (p.placeCp) label += p.placeCp;
             if (p.placeCo) label += "/" + p.placeCo;
             if (p.placeCe) label = "ev." + p.placeCe;
-            return { type: 'číslo', label: label, value: label, data: p };
+            return { type: 'place', label: label, value: label, data: p };
         });
 
         return candidates.filter(function (c) {
@@ -671,7 +679,7 @@
 
         this.suggestionBox.innerHTML = '';
         this.suggestionsData = list;
-        this.activeIndex = (list.length > 0 && list[0].type === 'kompletní') ? 0 : -1;
+        this.activeIndex = (list.length > 0 && list[0].type === 'complete') ? 0 : -1;
 
         if (!list || list.length === 0) {
             this.closeSuggestions();
@@ -684,15 +692,15 @@
             if (index === self.activeIndex) btn.classList.add('active');
 
             var badgeClass = 'bg-secondary';
-            if (item.type === 'obec') badgeClass = 'bg-primary';
-            if (item.type === 'ulice') badgeClass = 'bg-warning text-dark';
-            if (item.type === 'číslo') badgeClass = 'bg-info text-dark';
-            if (item.type === 'kompletní') {
+            if (item.type === 'municipality') badgeClass = 'bg-primary';
+            if (item.type === 'street') badgeClass = 'bg-warning text-dark';
+            if (item.type === 'place') badgeClass = 'bg-info text-dark';
+            if (item.type === 'complete') {
                 badgeClass = 'bg-success';
                 btn.classList.add('suggestion-complete');
             }
 
-            btn.innerHTML = '<span>' + item.label + '</span><span class="badge ' + badgeClass + ' badge-type">' + item.type + '</span>';
+            btn.innerHTML = '<span>' + item.label + '</span><span class="badge ' + badgeClass + ' badge-type">' + self.badgesLabels[item.type] + '</span>';
 
             btn.onclick = function (e) {
                 e.preventDefault();
@@ -708,7 +716,7 @@
         var item = this.suggestionsData[index];
         if (!item) return;
 
-        if (item.type === 'kompletní') {
+        if (item.type === 'complete') {
             this.inputElement.value = item.value;
             this.state.municipalityId = item.data.municipalityId;
             this.state.municipalityName = item.data.municipalityName;
@@ -721,7 +729,7 @@
             if (nextField) nextField.focus();
             return;
         }
-        else if (item.type === 'obec') {
+        else if (item.type === 'municipality') {
             this.state.municipalityId = item.data.municipalityId;
             this.state.municipalityName = item.data.municipalityName;
             this.state.zip = item.data.zip;
@@ -731,14 +739,14 @@
             this.inputElement.focus();
             return;
         }
-        else if (item.type === 'ulice') {
+        else if (item.type === 'street') {
             this.state.streetName = item.value;
             this.inputElement.value = this.state.municipalityName + ", " + item.value + ", ";
             this.handleInput(this.inputElement.value);
             this.inputElement.focus();
             return;
         }
-        else if (item.type === 'číslo') {
+        else if (item.type === 'place') {
             var prefix = this.state.municipalityName + ", ";
             if (this.state.streetName) prefix += this.state.streetName + ", ";
             var zip = item.data.placeZip || this.state.zip;
