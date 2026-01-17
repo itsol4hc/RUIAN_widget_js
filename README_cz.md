@@ -37,7 +37,7 @@ const widget = new RuianAddressWidget({
     inputElement: document.getElementById('address-input'),
     suggestionElement: document.getElementById('suggestion-box'),
     apiKey: 'VÁŠ_RUIAN_FNX_API_KLÍČ',
-    badgesLabels: { municipality: 'obec', street: 'ulice', place: 'číslo', complete: 'kompletní' }, // Pojmenování částí adresy
+    badgesLabels: { municipality: 'obec', street: 'ulice', place: 'číslo', complete: 'kompletní' }, // Popis částí adresy
     cachePreservation: 24, // Volitelné: Doba uložení cache v hodinách (výchozí: 24)
     cacheReset: false,     // Volitelné: Vynutit vymazání cache při startu (výchozí: false)
     onValidationChange: (isValid, data) => {

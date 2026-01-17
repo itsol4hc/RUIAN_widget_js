@@ -37,7 +37,7 @@ const widget = new RuianAddressWidget({
     inputElement: document.getElementById('address-input'),
     suggestionElement: document.getElementById('suggestion-box'),
     apiKey: 'YOUR_RUIAN_FNX_API_KEY',
-    badgesLabels: { municipality: 'municipality', street: 'street', place: 'place', complete: 'complete' }, // Address part descriptions
+    badgesLabels: { municipality: 'municipality', street: 'street', place: 'place', complete: 'complete' }, // Address parts description
     cachePreservation: 24, // Optional: Cache duration in hours (default: 24)
     cacheReset: false,     // Optional: Force reload cache on init (default: false)
     onValidationChange: (isValid, data) => {
